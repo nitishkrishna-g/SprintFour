@@ -2,12 +2,22 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Upload, FileText, CheckCircle, AlertCircle, Send, Cpu, Briefcase } from "lucide-react";
-import ReactMarkdown from "react-markdown"; // NEW: Imports markdown renderer
+import { Upload, FileText, CheckCircle, AlertCircle, Send, Cpu, Briefcase, Users, Layers, Layout, Key } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 import { getGeminiAnalysis, getChatResponse } from "@/lib/gemini";
 
 // --- Types ---
+type Mode = "single" | "many-resumes" | "many-jds";
+
+type FileData = {
+  id: string;
+  name: string;
+  text: string;
+};
+
 type AnalysisResult = {
+  id: string; // ID of the matched file (Resume ID or JD ID)
+  name: string; // Name of the matched file
   score: number;
   missingSkills: string[];
   verdict: string;
@@ -22,17 +32,32 @@ type ChatMessage = {
 
 export default function SprintFitAI() {
   // --- State ---
-  const [resumeText, setResumeText] = useState<string>("");
-  const [jdText, setJdText] = useState<string>("");
+  const [mode, setMode] = useState<Mode>("single");
+  const [userApiKey, setUserApiKey] = useState(""); // NEW: User API Key State
+  
+  // We store arrays now to support batch modes
+  const [resumes, setResumes] = useState<FileData[]>([]);
+  const [jds, setJds] = useState<FileData[]>([]);
+  
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [results, setResults] = useState<AnalysisResult[]>([]);
+  const [selectedResultId, setSelectedResultId] = useState<string | null>(null); // For Chat Context
   
   // Chat State
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // --- PDF Extraction Logic (Dynamic Import) ---
+  // --- Reset when mode changes ---
+  useEffect(() => {
+    setResumes([]);
+    setJds([]);
+    setResults([]);
+    setChatHistory([]);
+    setSelectedResultId(null);
+  }, [mode]);
+
+  // --- PDF Extraction Logic ---
   const extractTextFromPDF = async (file: File): Promise<string> => {
     try {
       const pdfjsLib = await import("pdfjs-dist");
@@ -56,75 +81,132 @@ export default function SprintFitAI() {
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: "resume" | "jd") => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
 
-    try {
-      const text = await extractTextFromPDF(file);
-      if (type === "resume") setResumeText(text);
-      else setJdText(text);
-    } catch (err) {
-      alert("Error parsing PDF. Please ensure it is a valid text-based PDF.");
+    const newFiles: FileData[] = [];
+    
+    // Process all selected files
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      try {
+        const text = await extractTextFromPDF(file);
+        newFiles.push({
+          id: Math.random().toString(36).substr(2, 9),
+          name: file.name,
+          text: text
+        });
+      } catch (err) {
+        console.error(`Failed to parse ${file.name}`);
+      }
+    }
+
+    if (type === "resume") {
+      // If single mode, replace. If batch, append.
+      setResumes(prev => mode === "single" || mode === "many-jds" ? newFiles : [...prev, ...newFiles]);
+    } else {
+      setJds(prev => mode === "single" || mode === "many-resumes" ? newFiles : [...prev, ...newFiles]);
     }
   };
 
-  // --- Hybrid Scoring Engine ---
-  const calculateKeywordScore = (resume: string, jd: string) => {
+  // --- Core Analysis Logic (Reusable) ---
+  const analyzePair = async (resume: FileData, jd: FileData): Promise<AnalysisResult> => {
+    // 1. Math-based Score
     const clean = (text: string) => text.toLowerCase().replace(/[^\w\s]/g, "").split(/\s+/);
-    const resumeTokens = new Set(clean(resume));
-    const jdTokens = clean(jd).filter(t => t.length > 3); 
-
-    if (jdTokens.length === 0) return 0;
+    const resumeTokens = new Set(clean(resume.text));
+    const jdTokens = clean(jd.text).filter(t => t.length > 3);
     
-    const matches = jdTokens.filter(token => resumeTokens.has(token));
-    const score = (matches.length / jdTokens.length) * 100;
-    return Math.min(score * 1.5, 100); 
-  };
+    let keywordScore = 0;
+    if (jdTokens.length > 0) {
+      const matches = jdTokens.filter(token => resumeTokens.has(token));
+      keywordScore = Math.min((matches.length / jdTokens.length) * 100 * 1.5, 100);
+    }
 
-  const analyzeProfile = async () => {
-    if (!resumeText || !jdText) return;
-    setLoading(true);
+    // 2. AI Analysis
+    const prompt = `
+      ACT AS A STRICT TECHNICAL RECRUITER.
+      Analyze this Resume against the Job Description.
+      
+      RESUME: ${resume.text.slice(0, 8000)}
+      JD: ${jd.text.slice(0, 8000)}
+
+      Output a valid JSON object strictly in this format:
+      {
+        "ai_score_0_to_100": number,
+        "missing_skills": ["skill1", "skill2"],
+        "verdict": "One ruthless sentence summary."
+      }
+    `;
 
     try {
-      // 1. Math-based Score (40%)
-      const keywordScore = calculateKeywordScore(resumeText, jdText);
-
-      // 2. AI Analysis (60%)
-      const prompt = `
-        ACT AS A STRICT TECHNICAL RECRUITER.
-        Analyze this Resume against the Job Description.
-        
-        RESUME TEXT: ${resumeText.slice(0, 10000)}
-        JOB DESCRIPTION: ${jdText.slice(0, 10000)}
-
-        Output a valid JSON object strictly in this format:
-        {
-          "ai_score_0_to_100": number,
-          "missing_skills": ["skill1", "skill2", "skill3"],
-          "verdict": "A ruthless 2-sentence summary of why they fit or fail."
-        }
-      `;
-
-      const aiJsonStr = await getGeminiAnalysis(prompt);
+      // NEW: Pass userApiKey to the function
+      const aiJsonStr = await getGeminiAnalysis(prompt, userApiKey);
       const cleanJson = aiJsonStr?.replace(/```json|```/g, "").trim() || "{}";
       const aiData = JSON.parse(cleanJson);
-
+      
       const aiScore = typeof aiData.ai_score_0_to_100 === 'number' ? aiData.ai_score_0_to_100 : 0;
-
-      // 3. Final Hybrid Calculation
       const finalScore = Math.round((keywordScore * 0.4) + (aiScore * 0.6));
 
-      setResult({
+      const isBatchResumes = mode === "many-resumes";
+      
+      return {
+        id: isBatchResumes ? resume.id : jd.id,
+        name: isBatchResumes ? resume.name : jd.name,
         score: finalScore,
         missingSkills: aiData.missing_skills || [],
-        verdict: aiData.verdict || "AI Analysis failed.",
+        verdict: aiData.verdict || "Analysis failed.",
         keywordMatchRate: Math.round(keywordScore),
         aiRating: aiScore
-      });
+      };
+    } catch (e) {
+      return {
+        id: mode === "many-resumes" ? resume.id : jd.id,
+        name: mode === "many-resumes" ? resume.name : jd.name,
+        score: 0,
+        missingSkills: ["Error"],
+        verdict: "Failed to analyze (Check API Key).",
+        keywordMatchRate: 0,
+        aiRating: 0
+      };
+    }
+  };
+
+  const runAnalysis = async () => {
+    if (resumes.length === 0 || jds.length === 0) return;
+    setLoading(true);
+    setResults([]);
+
+    try {
+      const batchResults: AnalysisResult[] = [];
+
+      // MODE 1 & 2: Single Resume vs One/Many JDs OR Many Resumes vs One JD
+      if (mode === "single") {
+        const result = await analyzePair(resumes[0], jds[0]);
+        batchResults.push(result);
+      } 
+      else if (mode === "many-resumes") {
+        for (const resume of resumes) {
+          const result = await analyzePair(resume, jds[0]);
+          batchResults.push(result);
+        }
+      } 
+      else if (mode === "many-jds") {
+        for (const jd of jds) {
+          const result = await analyzePair(resumes[0], jd);
+          batchResults.push(result);
+        }
+      }
+
+      batchResults.sort((a, b) => b.score - a.score);
+      setResults(batchResults);
+      
+      if (batchResults.length > 0) {
+        setSelectedResultId(batchResults[0].id);
+      }
 
     } catch (error) {
       console.error(error);
-      alert("AI Service is busy. Try again.");
+      alert("Analysis interrupted.");
     } finally {
       setLoading(false);
     }
@@ -132,15 +214,27 @@ export default function SprintFitAI() {
 
   // --- Chat Logic ---
   const sendChatMessage = async () => {
-    if (!chatInput.trim() || !result) return;
+    if (!chatInput.trim() || results.length === 0) return;
+    
+    let context = "";
+    if (mode === "single") {
+      context = `Resume: ${resumes[0].text.slice(0, 1000)}... JD: ${jds[0].text.slice(0, 1000)}...`;
+    } else {
+      if (mode === "many-resumes") {
+        const resume = resumes.find(r => r.id === selectedResultId);
+        context = `Focused Resume: ${resume?.name}. Content: ${resume?.text.slice(0, 1000)}... Target JD: ${jds[0].text.slice(0, 1000)}...`;
+      } else {
+        const jd = jds.find(j => j.id === selectedResultId);
+        context = `Candidate Resume: ${resumes[0].text.slice(0, 1000)}... Target JD: ${jd?.name}. Content: ${jd?.text.slice(0, 1000)}...`;
+      }
+    }
     
     const userMsg: ChatMessage = { role: "user", text: chatInput };
     setChatHistory(prev => [...prev, userMsg]);
     setChatInput("");
 
-    const context = `JD: ${jdText.slice(0, 1000)}... Resume: ${resumeText.slice(0, 1000)}...`;
-    const response = await getChatResponse(chatHistory, userMsg.text, context);
-    
+    // NEW: Pass userApiKey
+    const response = await getChatResponse(chatHistory, userMsg.text, context, userApiKey);
     setChatHistory(prev => [...prev, { role: "model", text: response || "Error." }]);
   };
 
@@ -148,18 +242,56 @@ export default function SprintFitAI() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatHistory]);
 
+  const getActiveResult = () => {
+    if (mode === "single") return results[0];
+    return results.find(r => r.id === selectedResultId) || results[0];
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-white font-sans selection:bg-indigo-500/30 pb-20">
       
       {/* Header */}
       <nav className="border-b border-white/10 bg-slate-900/50 backdrop-blur-md sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2">
+        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2 shrink-0">
             <Cpu className="text-indigo-500 animate-pulse" />
-            <span className="font-bold text-xl tracking-tight">SprintFit <span className="text-indigo-400">AI</span></span>
+            <span className="font-bold text-xl tracking-tight hidden sm:inline">SprintFit <span className="text-indigo-400">AI</span></span>
           </div>
-          <div className="text-xs text-slate-400 font-mono border border-slate-800 px-2 py-1 rounded">
-            v1.0.4 // HACKATHON_BUILD
+          
+          <div className="flex items-center gap-4 overflow-x-auto no-scrollbar">
+            {/* Mode Switcher */}
+            <div className="flex bg-slate-900 p-1 rounded-lg border border-slate-800 shrink-0">
+              <button 
+                onClick={() => setMode("single")}
+                className={`px-3 py-1 rounded-md text-sm flex items-center gap-2 transition-all ${mode === "single" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-white"}`}
+              >
+                <Layout size={14} /> <span className="hidden sm:inline">1v1</span>
+              </button>
+              <button 
+                onClick={() => setMode("many-resumes")}
+                className={`px-3 py-1 rounded-md text-sm flex items-center gap-2 transition-all ${mode === "many-resumes" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-white"}`}
+              >
+                <Users size={14} /> <span className="hidden sm:inline">Bulk CV</span>
+              </button>
+              <button 
+                onClick={() => setMode("many-jds")}
+                className={`px-3 py-1 rounded-md text-sm flex items-center gap-2 transition-all ${mode === "many-jds" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-white"}`}
+              >
+                <Layers size={14} /> <span className="hidden sm:inline">Bulk JD</span>
+              </button>
+            </div>
+
+            {/* API Key Input */}
+            <div className="flex items-center gap-2 bg-slate-900 p-1 rounded-lg border border-slate-800 shrink-0">
+              <Key size={14} className="text-slate-400 ml-2" />
+              <input
+                type="password"
+                placeholder="Custom API Key (Optional)"
+                value={userApiKey}
+                onChange={(e) => setUserApiKey(e.target.value)}
+                className="bg-transparent border-none focus:outline-none focus:ring-0 text-xs text-white w-24 sm:w-40 placeholder:text-slate-600"
+              />
+            </div>
           </div>
         </div>
       </nav>
@@ -168,15 +300,19 @@ export default function SprintFitAI() {
         
         {/* LEFT COLUMN: Upload & Results (8 cols) */}
         <div className="lg:col-span-8 space-y-6">
+          
+          {/* Upload Zone */}
           <div className="grid md:grid-cols-2 gap-4">
             <UploadCard 
-              title="Upload Resume (PDF)" 
-              active={!!resumeText} 
+              title={mode === "many-resumes" ? "Upload Resumes (Multiple)" : "Upload Resume (PDF)"}
+              count={resumes.length}
+              multiple={mode === "many-resumes"}
               onUpload={(e) => handleFileUpload(e, "resume")} 
             />
             <UploadCard 
-              title="Upload JD (PDF)" 
-              active={!!jdText} 
+              title={mode === "many-jds" ? "Upload JDs (Multiple)" : "Upload JD (PDF)"}
+              count={jds.length}
+              multiple={mode === "many-jds"}
               onUpload={(e) => handleFileUpload(e, "jd")} 
             />
           </div>
@@ -185,95 +321,130 @@ export default function SprintFitAI() {
             <motion.button
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
-              disabled={!resumeText || !jdText || loading}
-              onClick={analyzeProfile}
+              disabled={resumes.length === 0 || jds.length === 0 || loading}
+              onClick={runAnalysis}
               className={`px-8 py-3 rounded-full font-bold shadow-lg shadow-indigo-500/20 transition-all ${
-                resumeText && jdText 
+                resumes.length > 0 && jds.length > 0
                   ? "bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer" 
                   : "bg-slate-800 text-slate-500 cursor-not-allowed"
               }`}
             >
-              {loading ? "Crunching Data..." : "Run Compatibility Check"}
+              {loading ? `Analyzing ${mode === 'single' ? 'Pair' : 'Batch'}...` : "Run Analysis"}
             </motion.button>
           </div>
 
+          {/* Results View */}
           <AnimatePresence>
-            {result && (
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="bg-glass border border-white/10 rounded-2xl p-8 relative overflow-hidden shadow-2xl"
-              >
-                <div className="absolute -top-20 -right-20 w-64 h-64 bg-indigo-600/20 rounded-full blur-3xl pointer-events-none" />
-                <div className="grid md:grid-cols-3 gap-8 items-center relative z-10">
-                  <div className="flex flex-col items-center justify-center">
-                    <div className="relative w-40 h-40 flex items-center justify-center">
-                      <svg className="w-full h-full transform -rotate-90">
-                        <circle cx="80" cy="80" r="70" stroke="#1e293b" strokeWidth="10" fill="transparent" />
-                        <circle 
-                          cx="80" cy="80" r="70" 
-                          stroke={result.score > 70 ? "#10b981" : result.score > 40 ? "#f59e0b" : "#ef4444"} 
-                          strokeWidth="10" 
-                          fill="transparent"
-                          strokeDasharray={440}
-                          strokeDashoffset={440 - (440 * result.score) / 100}
-                          className="transition-all duration-1000 ease-out"
-                        />
-                      </svg>
-                      <span className="absolute text-4xl font-black">{result.score}%</span>
-                    </div>
-                    <p className="mt-2 text-sm text-slate-400 text-center">Hybrid Score</p>
-                    <div className="text-xs text-slate-500 mt-1 flex gap-2">
-                      <span>Keywords: {result.keywordMatchRate}%</span>
-                      <span>|</span>
-                      <span>AI: {result.aiRating}%</span>
-                    </div>
-                  </div>
+            {results.length > 0 && (
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                
+                {/* Active Result Card */}
+                <div className="bg-glass border border-white/10 rounded-2xl p-8 relative overflow-hidden shadow-2xl mb-6">
+                  <div className="absolute -top-20 -right-20 w-64 h-64 bg-indigo-600/20 rounded-full blur-3xl pointer-events-none" />
+                  
+                  {getActiveResult() && (
+                    <div className="grid md:grid-cols-3 gap-8 items-center relative z-10">
+                      <div className="flex flex-col items-center justify-center">
+                        <div className="relative w-40 h-40 flex items-center justify-center">
+                          <svg className="w-full h-full transform -rotate-90">
+                            <circle cx="80" cy="80" r="70" stroke="#1e293b" strokeWidth="10" fill="transparent" />
+                            <circle 
+                              cx="80" cy="80" r="70" 
+                              stroke={getActiveResult().score > 70 ? "#10b981" : getActiveResult().score > 40 ? "#f59e0b" : "#ef4444"} 
+                              strokeWidth="10" 
+                              fill="transparent"
+                              strokeDasharray={440}
+                              strokeDashoffset={440 - (440 * getActiveResult().score) / 100}
+                              className="transition-all duration-1000 ease-out"
+                            />
+                          </svg>
+                          <span className="absolute text-4xl font-black">{getActiveResult().score}%</span>
+                        </div>
+                        <p className="mt-2 text-sm text-slate-400 text-center font-bold max-w-37.5 truncate">{getActiveResult().name}</p>
+                      </div>
 
-                  <div className="md:col-span-2 space-y-6">
-                    <div>
-                      <h3 className="text-indigo-400 font-bold mb-2 flex items-center gap-2">
-                        <Briefcase size={18} /> AI Recruiter Verdict
-                      </h3>
-                      <p className="text-lg leading-relaxed text-slate-200 italic border-l-4 border-indigo-500 pl-4 bg-slate-900/30 py-2 rounded-r">
-                        "{result.verdict}"
-                      </p>
-                    </div>
-
-                    <div>
-                      <h3 className="text-red-400 font-bold mb-2 flex items-center gap-2">
-                        <AlertCircle size={18} /> Missing Skills
-                      </h3>
-                      <div className="flex flex-wrap gap-2">
-                        {result.missingSkills.map((skill, idx) => (
-                          <span key={idx} className="px-3 py-1 bg-red-500/10 border border-red-500/20 text-red-300 rounded-full text-sm">
-                            {skill}
-                          </span>
-                        ))}
+                      <div className="md:col-span-2 space-y-6">
+                        <div>
+                          <h3 className="text-indigo-400 font-bold mb-2 flex items-center gap-2">
+                            <Briefcase size={18} /> Verdict
+                          </h3>
+                          <p className="text-lg leading-relaxed text-slate-200 italic border-l-4 border-indigo-500 pl-4 bg-slate-900/30 py-2 rounded-r">
+                            "{getActiveResult().verdict}"
+                          </p>
+                        </div>
+                        <div>
+                          <h3 className="text-red-400 font-bold mb-2 flex items-center gap-2">
+                            <AlertCircle size={18} /> Missing Skills
+                          </h3>
+                          <div className="flex flex-wrap gap-2">
+                            {getActiveResult().missingSkills.map((skill, idx) => (
+                              <span key={idx} className="px-3 py-1 bg-red-500/10 border border-red-500/20 text-red-300 rounded-full text-sm">
+                                {skill}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
                       </div>
                     </div>
-                  </div>
+                  )}
                 </div>
+
+                {/* Batch Leaderboard */}
+                {mode !== "single" && (
+                  <div className="bg-slate-900/50 border border-white/10 rounded-2xl overflow-hidden">
+                    <div className="p-4 border-b border-white/5 bg-slate-800/50 font-bold text-slate-300">
+                      Leaderboard ({results.length} processed)
+                    </div>
+                    <div className="max-h-64 overflow-y-auto">
+                      {results.map((r, i) => (
+                        <div 
+                          key={r.id}
+                          onClick={() => {
+                            setSelectedResultId(r.id);
+                            setChatHistory([]); // Clear chat for new selection
+                          }}
+                          className={`flex items-center justify-between p-4 border-b border-white/5 cursor-pointer hover:bg-white/5 transition-colors ${selectedResultId === r.id ? "bg-indigo-500/10 border-l-4 border-l-indigo-500" : ""}`}
+                        >
+                          <div className="flex items-center gap-4">
+                            <span className="font-mono text-slate-500 text-sm">#{i + 1}</span>
+                            <div>
+                              <p className="font-semibold text-white truncate max-w-50">{r.name}</p>
+                              <p className="text-xs text-slate-400">Match: {r.verdict.slice(0, 50)}...</p>
+                            </div>
+                          </div>
+                          <span className={`font-bold text-lg ${r.score > 70 ? "text-green-400" : r.score > 40 ? "text-amber-400" : "text-red-400"}`}>
+                            {r.score}%
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </motion.div>
             )}
           </AnimatePresence>
         </div>
 
-        {/* RIGHT COLUMN: Chatbot (Updated) */}
+        {/* RIGHT COLUMN: Chatbot */}
         <div className="lg:col-span-4 flex flex-col h-150">
           <div className="flex-1 bg-slate-900/80 border border-white/10 rounded-2xl flex flex-col overflow-hidden shadow-2xl">
-            <div className="p-4 bg-indigo-900/20 border-b border-white/5 flex justify-between items-center">
+            <div className="p-4 bg-indigo-900/20 border-b border-white/5">
               <span className="font-semibold flex items-center gap-2">
                 <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
                 Interviewer Bot
               </span>
+              {mode !== "single" && results.length > 0 && (
+                <p className="text-xs text-indigo-300 mt-1 truncate">
+                  Context: <span className="font-bold">{getActiveResult()?.name || "Select an item"}</span>
+                </p>
+              )}
             </div>
             
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
               {chatHistory.length === 0 && (
                 <div className="text-center text-slate-500 mt-10 text-sm">
-                  <p>Upload files to start.</p>
-                  <p className="mt-2 text-xs">Try: "What are the red flags?"</p>
+                  <p>Upload & Analyze to start.</p>
+                  <p className="mt-2 text-xs">I can discuss the currently selected result.</p>
                 </div>
               )}
               {chatHistory.map((msg, idx) => (
@@ -283,22 +454,18 @@ export default function SprintFitAI() {
                       ? "bg-indigo-600 text-white rounded-br-none" 
                       : "bg-slate-800 text-slate-300 rounded-bl-none border border-slate-700"
                   }`}>
-                    {/* Only use Markdown for AI responses to handle lists/bolding */}
                     {msg.role === "model" ? (
                       <ReactMarkdown 
                         components={{
                             strong: ({node, ...props}) => <span className="font-bold text-indigo-400" {...props} />,
                             ul: ({node, ...props}) => <ul className="list-disc ml-4 space-y-2 mt-2" {...props} />,
-                            ol: ({node, ...props}) => <ol className="list-decimal ml-4 space-y-2 mt-2" {...props} />,
                             li: ({node, ...props}) => <li className="pl-1" {...props} />,
                             p: ({node, ...props}) => <p className="mb-2 last:mb-0" {...props} />,
                         }}
                       >
                         {msg.text}
                       </ReactMarkdown>
-                    ) : (
-                      msg.text
-                    )}
+                    ) : msg.text}
                   </div>
                 </div>
               ))}
@@ -312,14 +479,14 @@ export default function SprintFitAI() {
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && sendChatMessage()}
-                  disabled={!result}
-                  placeholder={result ? "Ask about the JD..." : "Analyze first..."}
+                  disabled={results.length === 0}
+                  placeholder={results.length > 0 ? "Ask about this result..." : "Waiting..."}
                   className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-4 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 disabled:opacity-50"
                 />
                 <button 
                   onClick={sendChatMessage}
-                  disabled={!result}
-                  className="p-2 bg-indigo-600 rounded-lg hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                  disabled={results.length === 0}
+                  className="p-2 bg-indigo-600 rounded-lg hover:bg-indigo-500 disabled:opacity-50 cursor-pointer"
                 >
                   <Send size={18} />
                 </button>
@@ -329,31 +496,37 @@ export default function SprintFitAI() {
         </div>
       </main>
 
+      <footer className="mt-12 py-6 border-t border-white/5 text-center">
+        <p className="text-slate-500 text-sm font-medium">
+          Built for the 4th Year Sprint — Optimizing the Day-Scholar's Journey.
+        </p>
+      </footer>
     </div>
   );
 }
 
 // Helper Component for Upload
-function UploadCard({ title, active, onUpload }: { title: string, active: boolean, onUpload: (e: React.ChangeEvent<HTMLInputElement>) => void }) {
+function UploadCard({ title, count, multiple, onUpload }: { title: string, count: number, multiple: boolean, onUpload: (e: React.ChangeEvent<HTMLInputElement>) => void }) {
   return (
     <div className={`relative group h-40 rounded-xl border-2 border-dashed transition-all duration-300 flex flex-col items-center justify-center p-4 ${
-      active ? "border-green-500/50 bg-green-500/5" : "border-slate-700 hover:border-indigo-500/50 hover:bg-indigo-500/5"
+      count > 0 ? "border-green-500/50 bg-green-500/5" : "border-slate-700 hover:border-indigo-500/50 hover:bg-indigo-500/5"
     }`}>
       <input 
         type="file" 
         accept="application/pdf" 
+        multiple={multiple}
         onChange={onUpload} 
         className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" 
       />
       
-      {active ? (
+      {count > 0 ? (
         <CheckCircle className="w-10 h-10 text-green-500 mb-2" />
       ) : (
         <FileText className="w-10 h-10 text-slate-500 group-hover:text-indigo-400 mb-2 transition-colors" />
       )}
       
-      <h3 className={`font-semibold ${active ? "text-green-400" : "text-slate-300"}`}>{title}</h3>
-      <p className="text-xs text-slate-500 mt-1">{active ? "Ready for analysis" : "Drag & drop or click"}</p>
+      <h3 className={`font-semibold ${count > 0 ? "text-green-400" : "text-slate-300"}`}>{title}</h3>
+      <p className="text-xs text-slate-500 mt-1">{count > 0 ? `${count} file(s) selected` : multiple ? "Drag & drop multiple files" : "Drag & drop single PDF"}</p>
     </div>
   );
 }
