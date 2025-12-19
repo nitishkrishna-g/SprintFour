@@ -3,12 +3,8 @@
 import React, { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Upload, FileText, CheckCircle, AlertCircle, Send, Cpu, Briefcase } from "lucide-react";
-import * as pdfjsLib from "pdfjs-dist";
+import ReactMarkdown from "react-markdown"; // NEW: Imports markdown renderer
 import { getGeminiAnalysis, getChatResponse } from "@/lib/gemini";
-
-// --- PDF Worker Setup ---
-// We use the specific version from your package.json to avoid mismatch errors
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@5.4.449/build/pdf.worker.min.mjs`;
 
 // --- Types ---
 type AnalysisResult = {
@@ -36,9 +32,12 @@ export default function SprintFitAI() {
   const [chatInput, setChatInput] = useState("");
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // --- PDF Extraction Logic ---
+  // --- PDF Extraction Logic (Dynamic Import) ---
   const extractTextFromPDF = async (file: File): Promise<string> => {
     try {
+      const pdfjsLib = await import("pdfjs-dist");
+      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@5.4.449/build/pdf.worker.min.mjs`;
+
       const arrayBuffer = await file.arrayBuffer();
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       let fullText = "";
@@ -46,7 +45,6 @@ export default function SprintFitAI() {
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
-        // @ts-expect-error - pdfjs types can be tricky with specific versions
         const pageText = textContent.items.map((item: any) => item.str).join(" ");
         fullText += pageText + " ";
       }
@@ -80,7 +78,6 @@ export default function SprintFitAI() {
     
     const matches = jdTokens.filter(token => resumeTokens.has(token));
     const score = (matches.length / jdTokens.length) * 100;
-    // Boost score slightly as exact keyword matches are rare, capping at 100
     return Math.min(score * 1.5, 100); 
   };
 
@@ -100,7 +97,7 @@ export default function SprintFitAI() {
         RESUME TEXT: ${resumeText.slice(0, 10000)}
         JOB DESCRIPTION: ${jdText.slice(0, 10000)}
 
-        Output a valid JSON object strictly in this format (do not use Markdown code blocks):
+        Output a valid JSON object strictly in this format:
         {
           "ai_score_0_to_100": number,
           "missing_skills": ["skill1", "skill2", "skill3"],
@@ -109,25 +106,25 @@ export default function SprintFitAI() {
       `;
 
       const aiJsonStr = await getGeminiAnalysis(prompt);
-      
-      // Cleanup json string if Gemini adds markdown blocks
       const cleanJson = aiJsonStr?.replace(/```json|```/g, "").trim() || "{}";
       const aiData = JSON.parse(cleanJson);
 
+      const aiScore = typeof aiData.ai_score_0_to_100 === 'number' ? aiData.ai_score_0_to_100 : 0;
+
       // 3. Final Hybrid Calculation
-      const finalScore = Math.round((keywordScore * 0.4) + (aiData.ai_score_0_to_100 * 0.6));
+      const finalScore = Math.round((keywordScore * 0.4) + (aiScore * 0.6));
 
       setResult({
         score: finalScore,
         missingSkills: aiData.missing_skills || [],
-        verdict: aiData.verdict || "Analysis failed.",
+        verdict: aiData.verdict || "AI Analysis failed.",
         keywordMatchRate: Math.round(keywordScore),
-        aiRating: aiData.ai_score_0_to_100
+        aiRating: aiScore
       });
 
     } catch (error) {
       console.error(error);
-      alert("AI Service is busy or response format error. Try again.");
+      alert("AI Service is busy. Try again.");
     } finally {
       setLoading(false);
     }
@@ -171,8 +168,6 @@ export default function SprintFitAI() {
         
         {/* LEFT COLUMN: Upload & Results (8 cols) */}
         <div className="lg:col-span-8 space-y-6">
-          
-          {/* Upload Zone */}
           <div className="grid md:grid-cols-2 gap-4">
             <UploadCard 
               title="Upload Resume (PDF)" 
@@ -186,7 +181,6 @@ export default function SprintFitAI() {
             />
           </div>
 
-          {/* Action Button */}
           <div className="flex justify-center py-4">
             <motion.button
               whileHover={{ scale: 1.05 }}
@@ -203,7 +197,6 @@ export default function SprintFitAI() {
             </motion.button>
           </div>
 
-          {/* Results Dashboard */}
           <AnimatePresence>
             {result && (
               <motion.div
@@ -211,11 +204,8 @@ export default function SprintFitAI() {
                 animate={{ opacity: 1, y: 0 }}
                 className="bg-glass border border-white/10 rounded-2xl p-8 relative overflow-hidden shadow-2xl"
               >
-                {/* Decorative blob */}
                 <div className="absolute -top-20 -right-20 w-64 h-64 bg-indigo-600/20 rounded-full blur-3xl pointer-events-none" />
-
                 <div className="grid md:grid-cols-3 gap-8 items-center relative z-10">
-                  {/* Score Circle */}
                   <div className="flex flex-col items-center justify-center">
                     <div className="relative w-40 h-40 flex items-center justify-center">
                       <svg className="w-full h-full transform -rotate-90">
@@ -235,10 +225,11 @@ export default function SprintFitAI() {
                     <p className="mt-2 text-sm text-slate-400 text-center">Hybrid Score</p>
                     <div className="text-xs text-slate-500 mt-1 flex gap-2">
                       <span>Keywords: {result.keywordMatchRate}%</span>
+                      <span>|</span>
+                      <span>AI: {result.aiRating}%</span>
                     </div>
                   </div>
 
-                  {/* Verdict & Skills */}
                   <div className="md:col-span-2 space-y-6">
                     <div>
                       <h3 className="text-indigo-400 font-bold mb-2 flex items-center gap-2">
@@ -268,8 +259,8 @@ export default function SprintFitAI() {
           </AnimatePresence>
         </div>
 
-        {/* RIGHT COLUMN: Chatbot (4 cols) */}
-        <div className="lg:col-span-4 flex flex-col h-[600px]">
+        {/* RIGHT COLUMN: Chatbot (Updated) */}
+        <div className="lg:col-span-4 flex flex-col h-150">
           <div className="flex-1 bg-slate-900/80 border border-white/10 rounded-2xl flex flex-col overflow-hidden shadow-2xl">
             <div className="p-4 bg-indigo-900/20 border-b border-white/5 flex justify-between items-center">
               <span className="font-semibold flex items-center gap-2">
@@ -278,7 +269,6 @@ export default function SprintFitAI() {
               </span>
             </div>
             
-            {/* Chat History */}
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
               {chatHistory.length === 0 && (
                 <div className="text-center text-slate-500 mt-10 text-sm">
@@ -288,19 +278,33 @@ export default function SprintFitAI() {
               )}
               {chatHistory.map((msg, idx) => (
                 <div key={idx} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-                  <div className={`max-w-[85%] rounded-2xl px-4 py-2 text-sm ${
+                  <div className={`max-w-[90%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
                     msg.role === "user" 
                       ? "bg-indigo-600 text-white rounded-br-none" 
                       : "bg-slate-800 text-slate-300 rounded-bl-none border border-slate-700"
                   }`}>
-                    {msg.text}
+                    {/* Only use Markdown for AI responses to handle lists/bolding */}
+                    {msg.role === "model" ? (
+                      <ReactMarkdown 
+                        components={{
+                            strong: ({node, ...props}) => <span className="font-bold text-indigo-400" {...props} />,
+                            ul: ({node, ...props}) => <ul className="list-disc ml-4 space-y-2 mt-2" {...props} />,
+                            ol: ({node, ...props}) => <ol className="list-decimal ml-4 space-y-2 mt-2" {...props} />,
+                            li: ({node, ...props}) => <li className="pl-1" {...props} />,
+                            p: ({node, ...props}) => <p className="mb-2 last:mb-0" {...props} />,
+                        }}
+                      >
+                        {msg.text}
+                      </ReactMarkdown>
+                    ) : (
+                      msg.text
+                    )}
                   </div>
                 </div>
               ))}
               <div ref={chatEndRef} />
             </div>
 
-            {/* Input Area */}
             <div className="p-4 border-t border-white/5 bg-slate-900">
               <div className="flex gap-2">
                 <input
@@ -325,12 +329,6 @@ export default function SprintFitAI() {
         </div>
       </main>
 
-      {/* Footer Constraint */}
-      <footer className="mt-12 py-6 border-t border-white/5 text-center">
-        <p className="text-slate-500 text-sm font-medium">
-          Built for the 4th Year Sprint — Optimizing the Day-Scholar's Journey.
-        </p>
-      </footer>
     </div>
   );
 }

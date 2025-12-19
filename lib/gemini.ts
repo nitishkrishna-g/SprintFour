@@ -1,10 +1,15 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 // Initialize Gemini
-// We use 'gemini-1.5-flash' for speed and stability. 
-// If you have access to the 2.0 preview, you can change the string to 'gemini-2.0-flash-exp'.
+// Error Fix: 'gemini-1.5-flash' alias sometimes fails (404). 
+// We are switching to 'gemini-1.5-flash-latest' which is more reliable, 
+// OR you can use 'gemini-2.0-flash-exp' if you want the absolute latest.
 const genAI = new GoogleGenerativeAI(process.env.NEXT_PUBLIC_GEMINI_API_KEY!);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+// Use a specific model version to prevent "Model not found" errors
+const model = genAI.getGenerativeModel({ 
+    model: "gemini-2.5-flash-lite" 
+});
 
 export async function getGeminiAnalysis(prompt: string) {
   try {
@@ -18,7 +23,6 @@ export async function getGeminiAnalysis(prompt: string) {
 }
 
 export async function getChatResponse(history: any[], message: string, context: string) {
-    // We initiate a chat session with the specific context of the Resume and JD
     const chat = model.startChat({
         history: [
             {
@@ -33,6 +37,11 @@ export async function getChatResponse(history: any[], message: string, context: 
         ]
     });
 
-    const result = await chat.sendMessage(message);
-    return result.response.text();
+    try {
+        const result = await chat.sendMessage(message);
+        return result.response.text();
+    } catch (error) {
+        console.error("Chat API Error:", error);
+        return "I'm having trouble connecting to the AI right now. Please try again.";
+    }
 }
