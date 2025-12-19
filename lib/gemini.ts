@@ -11,7 +11,7 @@ const getModel = (userKey?: string) => {
 
   const genAI = new GoogleGenerativeAI(key);
   // Using 'gemini-1.5-flash' for speed/cost efficiency
-  return genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
+  return genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 };
 
 export async function getGeminiAnalysis(prompt: string, apiKey?: string) {
@@ -34,7 +34,7 @@ export async function getChatResponse(history: any[], message: string, context: 
             history: [
                 {
                     role: "user",
-                    parts: [{ text: `System Context: You are a strict technical recruiter. Here is the Job Description (JD) and Resume context: ${context}` }]
+                    parts: [{ text: `System Context: You are a strict ATS Matching System. Here is the Job Description (JD) and Resume context: ${context}` }]
                 },
                 {
                     role: "model",

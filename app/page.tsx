@@ -111,6 +111,22 @@ export default function SprintFitAI() {
 
   // --- Core Analysis Logic (Reusable) ---
   const analyzePair = async (resume: FileData, jd: FileData): Promise<AnalysisResult> => {
+    
+    // START FIX: Immediate Check for Identical Content (User Error)
+    if (resume.text.trim() === jd.text.trim()) {
+       const isBatchResumes = mode === "many-resumes";
+       return {
+        id: isBatchResumes ? resume.id : jd.id,
+        name: isBatchResumes ? resume.name : jd.name,
+        score: 0, // Flag as failure/error
+        missingSkills: ["Identical Files Detected"],
+        verdict: "Error: You likely uploaded the JD in the Resume slot.",
+        keywordMatchRate: 100, 
+        aiRating: 0
+      };
+    }
+    // END FIX
+
     // 1. Math-based Score
     const clean = (text: string) => text.toLowerCase().replace(/[^\w\s]/g, "").split(/\s+/);
     const resumeTokens = new Set(clean(resume.text));
@@ -123,9 +139,11 @@ export default function SprintFitAI() {
     }
 
     // 2. AI Analysis
+    // UPDATED PROMPT: "ATS MATCHING SYSTEM" to ensure better accuracy on skills vs strict recruiting
     const prompt = `
-      ACT AS A STRICT TECHNICAL RECRUITER.
+      ACT AS AN ATS MATCHING SYSTEM.
       Analyze this Resume against the Job Description.
+      Ignore formatting issues. Solely evaluate if the Resume contains the skills and experience requested in the JD.
       
       RESUME: ${resume.text.slice(0, 8000)}
       JD: ${jd.text.slice(0, 8000)}
@@ -496,11 +514,6 @@ export default function SprintFitAI() {
         </div>
       </main>
 
-      <footer className="mt-12 py-6 border-t border-white/5 text-center">
-        <p className="text-slate-500 text-sm font-medium">
-          Built for the 4th Year Sprint — Optimizing the Day-Scholar's Journey.
-        </p>
-      </footer>
     </div>
   );
 }
