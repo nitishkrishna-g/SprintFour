@@ -34,6 +34,7 @@ export default function SprintFitAI() {
   // --- State ---
   const [mode, setMode] = useState<Mode>("single");
   const [userApiKey, setUserApiKey] = useState(""); 
+  const [showApiKeyAlert, setShowApiKeyAlert] = useState(false); // New State for Alert
   
   const [resumes, setResumes] = useState<FileData[]>([]);
   const [jds, setJds] = useState<FileData[]>([]);
@@ -180,6 +181,14 @@ export default function SprintFitAI() {
   };
 
   const runAnalysis = async () => {
+    // --- INTEGRATION: Check API Key ---
+    const hasKey = userApiKey.trim() !== "" || !!process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+    if (!hasKey) {
+      setShowApiKeyAlert(true);
+      return;
+    }
+    // ----------------------------------
+
     if (resumes.length === 0 || jds.length === 0) return;
     setLoading(true);
     setResults([]);
@@ -221,6 +230,14 @@ export default function SprintFitAI() {
 
   // --- Chat Logic ---
   const sendChatMessage = async () => {
+    // --- INTEGRATION: Check API Key ---
+    const hasKey = userApiKey.trim() !== "" || !!process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+    if (!hasKey) {
+      setShowApiKeyAlert(true);
+      return;
+    }
+    // ----------------------------------
+
     if (!chatInput.trim() || results.length === 0) return;
     
     let context = "";
@@ -298,6 +315,7 @@ export default function SprintFitAI() {
             <div className="flex items-center gap-2 bg-slate-900/50 px-3 py-1.5 rounded-lg border border-slate-800 focus-within:border-indigo-500/50 transition-colors">
               <Key size={14} className="text-slate-400" />
               <input
+                id="api-key-input" // --- INTEGRATION: Added ID ---
                 type="password"
                 placeholder="Gemini API Key"
                 value={userApiKey}
@@ -440,7 +458,6 @@ export default function SprintFitAI() {
         </div>
 
         {/* FIX 3: CHATBOT HEIGHT & POSITION */}
-        {/* Changed h-150 to dynamic calc() and added sticky positioning */}
         <div className="lg:col-span-4 flex flex-col h-[500px] lg:h-[calc(100vh-8rem)] lg:sticky lg:top-24">
           <div className="flex-1 bg-slate-900/80 border border-white/10 rounded-2xl flex flex-col overflow-hidden shadow-2xl">
             <div className="p-4 bg-indigo-900/20 border-b border-white/5">
@@ -510,6 +527,65 @@ export default function SprintFitAI() {
           </div>
         </div>
       </main>
+
+      {/* --- INTEGRATION: API KEY WARNING MODAL --- */}
+      <AnimatePresence>
+        {showApiKeyAlert && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowApiKeyAlert(false)}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-slate-900 border border-red-500/30 rounded-2xl p-8 max-w-md w-full shadow-2xl relative overflow-hidden"
+            >
+              {/* Background Glow */}
+              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-red-500 to-transparent opacity-50" />
+              
+              <div className="flex flex-col items-center text-center space-y-4">
+                <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mb-2">
+                  <Key className="w-8 h-8 text-red-500" />
+                </div>
+                
+                <h3 className="text-2xl font-bold text-white">API Key Required</h3>
+                
+                <p className="text-slate-400 text-sm leading-relaxed">
+                  To analyze resumes and chat with the AI, you need a Google Gemini API Key.
+                </p>
+
+                <div className="bg-slate-800/50 rounded-lg p-3 w-full text-xs text-slate-500 border border-slate-700/50">
+                  <p>1. Get a free key from <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-indigo-400 hover:underline">Google AI Studio</a></p>
+                  <p className="mt-1">2. Paste it in the top-right input box.</p>
+                </div>
+
+                <div className="flex gap-3 w-full mt-4">
+                  <button
+                    onClick={() => setShowApiKeyAlert(false)}
+                    className="flex-1 px-4 py-2 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors text-sm font-medium"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowApiKeyAlert(false);
+                      document.getElementById('api-key-input')?.focus();
+                    }}
+                    className="flex-1 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white transition-colors text-sm font-medium"
+                  >
+                    I Understand
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
     </div>
   );
