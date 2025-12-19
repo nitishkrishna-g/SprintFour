@@ -16,8 +16,8 @@ type FileData = {
 };
 
 type AnalysisResult = {
-  id: string; // ID of the matched file (Resume ID or JD ID)
-  name: string; // Name of the matched file
+  id: string;
+  name: string;
   score: number;
   missingSkills: string[];
   verdict: string;
@@ -33,15 +33,14 @@ type ChatMessage = {
 export default function SprintFitAI() {
   // --- State ---
   const [mode, setMode] = useState<Mode>("single");
-  const [userApiKey, setUserApiKey] = useState(""); // NEW: User API Key State
+  const [userApiKey, setUserApiKey] = useState(""); 
   
-  // We store arrays now to support batch modes
   const [resumes, setResumes] = useState<FileData[]>([]);
   const [jds, setJds] = useState<FileData[]>([]);
   
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<AnalysisResult[]>([]);
-  const [selectedResultId, setSelectedResultId] = useState<string | null>(null); // For Chat Context
+  const [selectedResultId, setSelectedResultId] = useState<string | null>(null); 
   
   // Chat State
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
@@ -86,7 +85,6 @@ export default function SprintFitAI() {
 
     const newFiles: FileData[] = [];
     
-    // Process all selected files
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       try {
@@ -102,32 +100,27 @@ export default function SprintFitAI() {
     }
 
     if (type === "resume") {
-      // If single mode, replace. If batch, append.
       setResumes(prev => mode === "single" || mode === "many-jds" ? newFiles : [...prev, ...newFiles]);
     } else {
       setJds(prev => mode === "single" || mode === "many-resumes" ? newFiles : [...prev, ...newFiles]);
     }
   };
 
-  // --- Core Analysis Logic (Reusable) ---
+  // --- Core Analysis Logic ---
   const analyzePair = async (resume: FileData, jd: FileData): Promise<AnalysisResult> => {
-    
-    // START FIX: Immediate Check for Identical Content (User Error)
     if (resume.text.trim() === jd.text.trim()) {
        const isBatchResumes = mode === "many-resumes";
        return {
         id: isBatchResumes ? resume.id : jd.id,
         name: isBatchResumes ? resume.name : jd.name,
-        score: 0, // Flag as failure/error
+        score: 0, 
         missingSkills: ["Identical Files Detected"],
         verdict: "Error: You likely uploaded the JD in the Resume slot.",
         keywordMatchRate: 100, 
         aiRating: 0
       };
     }
-    // END FIX
 
-    // 1. Math-based Score
     const clean = (text: string) => text.toLowerCase().replace(/[^\w\s]/g, "").split(/\s+/);
     const resumeTokens = new Set(clean(resume.text));
     const jdTokens = clean(jd.text).filter(t => t.length > 3);
@@ -138,8 +131,6 @@ export default function SprintFitAI() {
       keywordScore = Math.min((matches.length / jdTokens.length) * 100 * 1.5, 100);
     }
 
-    // 2. AI Analysis
-    // UPDATED PROMPT: "ATS MATCHING SYSTEM" to ensure better accuracy on skills vs strict recruiting
     const prompt = `
       ACT AS AN ATS MATCHING SYSTEM.
       Analyze this Resume against the Job Description.
@@ -157,7 +148,6 @@ export default function SprintFitAI() {
     `;
 
     try {
-      // NEW: Pass userApiKey to the function
       const aiJsonStr = await getGeminiAnalysis(prompt, userApiKey);
       const cleanJson = aiJsonStr?.replace(/```json|```/g, "").trim() || "{}";
       const aiData = JSON.parse(cleanJson);
@@ -197,7 +187,6 @@ export default function SprintFitAI() {
     try {
       const batchResults: AnalysisResult[] = [];
 
-      // MODE 1 & 2: Single Resume vs One/Many JDs OR Many Resumes vs One JD
       if (mode === "single") {
         const result = await analyzePair(resumes[0], jds[0]);
         batchResults.push(result);
@@ -251,13 +240,15 @@ export default function SprintFitAI() {
     setChatHistory(prev => [...prev, userMsg]);
     setChatInput("");
 
-    // NEW: Pass userApiKey
     const response = await getChatResponse(chatHistory, userMsg.text, context, userApiKey);
     setChatHistory(prev => [...prev, { role: "model", text: response || "Error." }]);
   };
 
+  // FIX 1: Prevent page jump on refresh. Only scroll if history exists.
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (chatHistory.length > 0) {
+      chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
   }, [chatHistory]);
 
   const getActiveResult = () => {
@@ -268,53 +259,58 @@ export default function SprintFitAI() {
   return (
     <div className="min-h-screen bg-slate-950 text-white font-sans selection:bg-indigo-500/30 pb-20">
       
-      {/* Header */}
+      {/* FIX 2: REORGANIZED NAVBAR */}
       <nav className="border-b border-white/10 bg-slate-900/50 backdrop-blur-md sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2 shrink-0">
+        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+          
+          {/* Left: Logo */}
+          <div className="flex items-center gap-2 shrink-0 w-1/4">
             <Cpu className="text-indigo-500 animate-pulse" />
             <span className="font-bold text-xl tracking-tight hidden sm:inline">SprintFit <span className="text-indigo-400">AI</span></span>
           </div>
           
-          <div className="flex items-center gap-4 overflow-x-auto no-scrollbar">
-            {/* Mode Switcher */}
-            <div className="flex bg-slate-900 p-1 rounded-lg border border-slate-800 shrink-0">
+          {/* Center: Mode Switcher */}
+          <div className="flex justify-center flex-1">
+            <div className="flex bg-slate-900/80 p-1 rounded-full border border-slate-800">
               <button 
                 onClick={() => setMode("single")}
-                className={`px-3 py-1 rounded-md text-sm flex items-center gap-2 transition-all ${mode === "single" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-white"}`}
+                className={`px-4 py-1.5 rounded-full text-xs font-medium transition-all ${mode === "single" ? "bg-indigo-600 text-white shadow-lg shadow-indigo-500/25" : "text-slate-400 hover:text-white"}`}
               >
-                <Layout size={14} /> <span className="hidden sm:inline">1v1</span>
+                1v1
               </button>
               <button 
                 onClick={() => setMode("many-resumes")}
-                className={`px-3 py-1 rounded-md text-sm flex items-center gap-2 transition-all ${mode === "many-resumes" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-white"}`}
+                className={`px-4 py-1.5 rounded-full text-xs font-medium transition-all ${mode === "many-resumes" ? "bg-indigo-600 text-white shadow-lg shadow-indigo-500/25" : "text-slate-400 hover:text-white"}`}
               >
-                <Users size={14} /> <span className="hidden sm:inline">Bulk CV</span>
+                Bulk CV
               </button>
               <button 
                 onClick={() => setMode("many-jds")}
-                className={`px-3 py-1 rounded-md text-sm flex items-center gap-2 transition-all ${mode === "many-jds" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-white"}`}
+                className={`px-4 py-1.5 rounded-full text-xs font-medium transition-all ${mode === "many-jds" ? "bg-indigo-600 text-white shadow-lg shadow-indigo-500/25" : "text-slate-400 hover:text-white"}`}
               >
-                <Layers size={14} /> <span className="hidden sm:inline">Bulk JD</span>
+                Bulk JD
               </button>
             </div>
+          </div>
 
-            {/* API Key Input */}
-            <div className="flex items-center gap-2 bg-slate-900 p-1 rounded-lg border border-slate-800 shrink-0">
-              <Key size={14} className="text-slate-400 ml-2" />
+          {/* Right: API Key */}
+          <div className="flex justify-end w-1/4">
+            <div className="flex items-center gap-2 bg-slate-900/50 px-3 py-1.5 rounded-lg border border-slate-800 focus-within:border-indigo-500/50 transition-colors">
+              <Key size={14} className="text-slate-400" />
               <input
                 type="password"
-                placeholder="Custom API Key (Optional)"
+                placeholder="Gemini API Key"
                 value={userApiKey}
                 onChange={(e) => setUserApiKey(e.target.value)}
-                className="bg-transparent border-none focus:outline-none focus:ring-0 text-xs text-white w-24 sm:w-40 placeholder:text-slate-600"
+                className="bg-transparent border-none focus:outline-none text-xs text-white w-24 sm:w-32 placeholder:text-slate-600"
               />
             </div>
           </div>
+
         </div>
       </nav>
 
-      <main className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 mt-6">
+      <main className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 mt-6 items-start">
         
         {/* LEFT COLUMN: Upload & Results (8 cols) */}
         <div className="lg:col-span-8 space-y-6">
@@ -419,7 +415,7 @@ export default function SprintFitAI() {
                           key={r.id}
                           onClick={() => {
                             setSelectedResultId(r.id);
-                            setChatHistory([]); // Clear chat for new selection
+                            setChatHistory([]); 
                           }}
                           className={`flex items-center justify-between p-4 border-b border-white/5 cursor-pointer hover:bg-white/5 transition-colors ${selectedResultId === r.id ? "bg-indigo-500/10 border-l-4 border-l-indigo-500" : ""}`}
                         >
@@ -443,8 +439,9 @@ export default function SprintFitAI() {
           </AnimatePresence>
         </div>
 
-        {/* RIGHT COLUMN: Chatbot */}
-        <div className="lg:col-span-4 flex flex-col h-150">
+        {/* FIX 3: CHATBOT HEIGHT & POSITION */}
+        {/* Changed h-150 to dynamic calc() and added sticky positioning */}
+        <div className="lg:col-span-4 flex flex-col h-[500px] lg:h-[calc(100vh-8rem)] lg:sticky lg:top-24">
           <div className="flex-1 bg-slate-900/80 border border-white/10 rounded-2xl flex flex-col overflow-hidden shadow-2xl">
             <div className="p-4 bg-indigo-900/20 border-b border-white/5">
               <span className="font-semibold flex items-center gap-2">
